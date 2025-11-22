@@ -1,0 +1,295 @@
+
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Dashboard DENUE - Ligero (datos externos)</title>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- MarkerCluster -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+  <!-- Heatmap -->
+  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+
+  <!-- Plotly -->
+  <script src="https://cdn.plot.ly/plotly-2.25.2.min.js"></script>
+
+  <!-- Bootstrap (solo CSS) -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"/>
+
+  <style>
+    body { margin:0; padding:0; font-family: Arial, Helvetica, sans-serif; background:#f5f7fa; }
+    #sidebar { position: fixed; left: 0; top: 0; width: 320px; height: 100vh; background: #ffffff; border-right: 1px solid #e3e6ea; padding: 18px; overflow-y: auto; z-index: 1000; }
+    #map-container { margin-left: 320px; padding: 18px; }
+    #map { height: 70vh; border-radius: 6px; box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
+    .small-muted { color:#666; font-size:0.9em; }
+    .btn-apply { background:#1a4813; color:white; border:none; }
+    .legend-item { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+    .color-box { width:16px; height:16px; border-radius:3px; display:inline-block; }
+  </style>
+</head>
+<body>
+
+  <div id="sidebar" aria-label="Panel lateral">
+    <h4>Filtros</h4>
+
+    <div class="mb-3">
+      <label class="form-label small-muted">Estado</label>
+      <select id="selEstado" class="form-select"></select>
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label small-muted">Municipio</label>
+      <select id="selMunicipio" class="form-select"></select>
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label small-muted">Categorías</label>
+      <div id="checkboxCategorias" style="max-height:150px; overflow:auto;"></div>
+    </div>
+
+    <div class="mb-3">
+      <button id="btnApply" class="btn btn-apply w-100">Aplicar filtros</button>
+    </div>
+
+    <hr/>
+    <h6>Leyenda</h6>
+    <div id="legend"></div>
+    <hr/>
+    <div>
+      <button id="btnExport" class="btn btn-outline-secondary w-100">Exportar CSV filtrado</button>
+    </div>
+
+    <footer style="margin-top:12px;">
+      <p class="small-muted"><b>Datos:</b> DENUE (05/2025). Fuente externa (GitHub).</p>
+    </footer>
+  </div>
+
+  <div id="map-container">
+    <div id="map"></div>
+
+    <div id="insights" style="margin-top:12px;">
+      <div class="card p-3 mb-3">
+        <div class="d-flex justify-content-between align-items-center">
+          <div>
+            <h5 id="kpi-total">Total: 0</h5>
+            <div class="small-muted">Establecimientos mostrados</div>
+          </div>
+          <div>
+            <h6 id="kpi-top-cat">Categoría top: -</h6>
+            <div class="small-muted">Mayor frecuencia</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-6">
+          <div id="barCategoria" style="height:280px;"></div>
+        </div>
+        <div class="col-6">
+          <div id="tablaTopMunicipios" class="card p-2" style="height:280px; overflow:auto;"></div>
+        </div>
+      </div>
+
+      <!-- Insights estratégicos (orientados a posicionamiento comercial de rehabilitación física) -->
+      <div class="card p-3 mt-3" style="background:#fff; border-left:4px solid #26621d;">
+        <h5 style="color:#1a4813; margin-bottom:8px;">Insights estratégicos — Rehabilitación física</h5>
+        <p id="insight1" style="margin-bottom:6px;"></p>
+        <p id="insight2" style="margin-bottom:6px;"></p>
+        <p id="insight3" style="margin-bottom:6px;"></p>
+        <p id="insight4" style="margin-bottom:0;"></p>
+      </div>
+
+    </div>
+  </div>
+
+<script>
+/* --------------------------
+   CARGA GEOJSON DESDE URL
+   -------------------------- */
+const GEOJSON_URL = "https://raw.githubusercontent.com/USUARIO/REPO/main/denue.geojson";  // <-- será reemplazado por Python
+
+let features = []; // array de objetos {nombre,actividad,estado,municipio,categoria,color,lat,lon}
+
+async function loadGeo() {
+  try {
+    const resp = await fetch(GEOJSON_URL);
+    const geo = await resp.json();
+    features = geo.features.map(function(f){
+      const p = f.properties || {};
+      // geometry fallback if properties don't have lat/lon
+      const lon = (f.geometry && f.geometry.coordinates) ? f.geometry.coordinates[0] : (p.longitud || 0);
+      const lat = (f.geometry && f.geometry.coordinates) ? f.geometry.coordinates[1] : (p.latitud || 0);
+      return {
+        nombre: p.nombre || p.nom_estab || "",
+        actividad: p.actividad || p.nombre_act || "",
+        estado: p.estado || p.entidad || "",
+        municipio: p.municipio || "",
+        categoria: p.categoria || "Otros",
+        color: p.color || "#6666ff",
+        lat: parseFloat(lat) || null,
+        lon: parseFloat(lon) || null
+      };
+    });
+    initPanel();
+  } catch (e) {
+    console.error("Error cargando GeoJSON:", e);
+    alert("Error cargando datos desde la URL especificada. Ver consola.");
+  }
+}
+
+/* --------------------------
+   INICIALIZAR PANEL Y MAPA
+   -------------------------- */
+function unique(arr){ return Array.from(new Set(arr)); }
+
+function initPanel(){
+  // DOM refs
+  const selEstado = document.getElementById("selEstado");
+  const selMunicipio = document.getElementById("selMunicipio");
+  const catContainer = document.getElementById("checkboxCategorias");
+  const legendDiv = document.getElementById("legend");
+  const tablaTop = document.getElementById("tablaTopMunicipios");
+
+  // listas únicas
+  const estados = unique(features.map(f => f.estado)).filter(Boolean).sort();
+  const categorias = unique(features.map(f => f.categoria)).filter(Boolean).sort();
+
+  // poblar selects
+  selEstado.innerHTML = "<option value='Todos'>Todos</option>" + estados.map(function(s){ return "<option value='"+s+"'>"+s+"</option>"; }).join("");
+  function updateMunicipios(estado){
+    let list = features;
+    if(estado && estado !== "Todos") list = features.filter(f => f.estado === estado);
+    const municipios = unique(list.map(f => f.municipio)).filter(Boolean).sort();
+    selMunicipio.innerHTML = "<option value='Todos'>Todos</option>" + municipios.map(function(m){ return "<option value='"+m+"'>"+m+"</option>"; }).join("");
+  }
+  updateMunicipios("Todos");
+  selEstado.addEventListener("change", function(){ updateMunicipios(this.value); });
+
+  // categorias checkboxes
+  catContainer.innerHTML = categorias.map(function(cat){
+    return "<div class='form-check'><input class='form-check-input cat-checkbox' type='checkbox' value='"+cat+"' id='cat-"+cat+"' checked><label class='form-check-label' for='cat-"+cat+"'>"+cat+"</label></div>";
+  }).join("");
+  // leyenda
+  legendDiv.innerHTML = categorias.map(function(cat){
+    const c = (features.find(x=>x.categoria===cat) || {}).color || "#888";
+    return "<div class='legend-item'><span class='color-box' style='background:"+c+";'></span>"+cat+"</div>";
+  }).join("");
+
+  // inicializar mapa
+  const map = L.map('map').setView([19.3, -99.1], 7);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+  const cluster = L.markerClusterGroup();
+  cluster.addTo(map);
+  let heat = null;
+
+  // aplicar filtros y dibujar
+  function aplicarFiltros(){
+    cluster.clearLayers();
+    if(heat) { try{ map.removeLayer(heat);}catch(e){}; heat = null; }
+
+    const estado = selEstado.value;
+    const municipio = selMunicipio.value;
+    const checked = Array.from(document.querySelectorAll(".cat-checkbox:checked")).map(n=>n.value);
+
+    const filtered = features.filter(function(f){
+      if(estado !== "Todos" && f.estado !== estado) return false;
+      if(municipio !== "Todos" && f.municipio !== municipio) return false;
+      if(checked.length && checked.indexOf(f.categoria) === -1) return false;
+      return true;
+    });
+
+    // KPIs
+    document.getElementById("kpi-total").innerText = "Total: " + filtered.length;
+    const counts = {};
+    filtered.forEach(function(r){ counts[r.categoria] = (counts[r.categoria] || 0) + 1; });
+    const topCatEntry = Object.entries(counts).sort(function(a,b){ return b[1]-a[1]; })[0];
+    document.getElementById("kpi-top-cat").innerText = topCatEntry ? (topCatEntry[0] + " (" + topCatEntry[1] + ")") : "-";
+
+    // tabla top municipios
+    const munCounts = {};
+    filtered.forEach(function(r){ munCounts[r.municipio] = (munCounts[r.municipio]||0)+1; });
+    const topMun = Object.entries(munCounts).sort(function(a,b){ return b[1]-a[1]; }).slice(0,10);
+    tablaTop.innerHTML = "<h6>Top Municipios</h6>" + (topMun.length ? "<ol>" + topMun.map(function(x){ return "<li>"+x[0]+" — "+x[1]+"</li>"; }).join("") + "</ol>" : "<p>No hay datos</p>");
+
+    // insights orientados a rehabilitación física
+    const total = filtered.length;
+    const topCat = topCatEntry;
+    const topMunNames = topMun.slice(0,3).map(x=>x[0]);
+    document.getElementById("insight1").innerText = total>0 ? "Se identificaron " + total + " establecimientos relevantes para el análisis de posicionamiento comercial en rehabilitación física." : "No se encontraron establecimientos con los filtros actuales.";
+    document.getElementById("insight2").innerText = topCat ? ("La categoría dominante es " + topCat[0] + " con " + topCat[1] + " establecimientos, lo que sugiere priorizar productos y servicios dirigidos a esta tipología.") : "";
+    document.getElementById("insight3").innerText = topMunNames.length ? ("Municipios prioritarios para despliegue comercial: " + topMunNames.join(", ") + ".") : "";
+    document.getElementById("insight4").innerText = total>100 ? "Alta concentración: considere enfoque logístico por corredores y alianzas con proveedores locales." : (total>20 ? "Actividad moderada: priorizar visitas comerciales y pilotos." : "Baja densidad: evaluar estudios de demanda o campañas de educación/comercialización.");
+
+    // puntos en mapa + heat
+    const heatPoints = [];
+    filtered.forEach(function(d){
+      if(!d.lat || !d.lon) return;
+      const marker = L.circleMarker([d.lat, d.lon], { radius:5, color:d.color, fillColor:d.color, fillOpacity:0.85, weight:1 });
+      marker.bindPopup("<b>"+d.nombre+"</b><br><small>"+d.actividad+"</small><br>"+(d.municipio || "") + ", " + (d.estado || ""));
+      cluster.addLayer(marker);
+      heatPoints.push([d.lat, d.lon, 0.6]);
+    });
+
+    if(heatPoints.length) {
+      heat = L.heatLayer(heatPoints, {radius:20, blur:15}).addTo(map);
+      // fit bounds
+      try {
+        const layers = cluster.getLayers();
+        if(layers.length) {
+          const group = L.featureGroup(layers);
+          map.fitBounds(group.getBounds().pad(0.15));
+        }
+      } catch(e){}
+    }
+
+    // grafica categorias
+    Plotly.newPlot("barCategoria", [{ x:Object.keys(counts), y:Object.values(counts), type:"bar" }], {margin:{t:30}});
+  }
+
+  // eventos
+  document.getElementById("btnApply").addEventListener("click", aplicarFiltros);
+  selMunicipio.addEventListener("change", aplicarFiltros);
+  document.addEventListener("change", function(e){ if(e.target && e.target.classList && e.target.classList.contains('cat-checkbox')) aplicarFiltros(); });
+
+  // export CSV
+  document.getElementById("btnExport").addEventListener("click", function(){
+    const estado = selEstado.value;
+    const municipio = selMunicipio.value;
+    const checked = Array.from(document.querySelectorAll(".cat-checkbox:checked")).map(n=>n.value);
+    const rows = [];
+    const header = ["nombre","actividad","estado","municipio","categoria","lat","lon"];
+    rows.push(header.join(","));
+    features.forEach(function(f){
+      if((estado==="Todos" || f.estado===estado) && (municipio==="Todos" || f.municipio===municipio || !municipio) && checked.includes(f.categoria)) {
+        rows.push([f.nombre,f.actividad,f.estado,f.municipio,f.categoria,f.lat,f.lon].map(function(v){ return '"'+String(v||"").replace(/"/g,'""') + '"'; }).join(","));
+      }
+    });
+    if(rows.length<=1) { alert("No hay registros para exportar."); return; }
+    const blob = new Blob([rows.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "denue_filtrado.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  });
+
+  // primer render
+  aplicarFiltros();
+} // end initPanel
+
+// start
+loadGeo();
+</script>
+
+</body>
+</html>
